@@ -1,47 +1,79 @@
 package main
 
 import (
+  log "github.com/sirupsen/logrus"
   "os"
-  "fmt"
+  "regexp"
+  "strconv"
   "github.com/urfave/cli"
+
+  "github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
   "net/http"
   "os/exec"
   "bytes"
 )
 
-type MetricsHandler struct {
-  metrics []string
+var(
+  temperatureRegex = regexp.MustCompile(`^temp=([0-9]*\.[0-9]*)'C$`)
+  temperatureDesc = prometheus.NewDesc(
+		"vcgencmd_temperature_celsius",
+		"temperature in celsius",
+		nil,
+    nil)
+)
+
+type VcgencmdCollector struct {
+
 }
 
-func (me *MetricsHandler)webHandler(w http.ResponseWriter, r *http.Request) {
-  //execute command for getting the temperature
-  values := me.ObtainMetrics()
-  for _,  value := range values {
-    fmt.Println(value)
-    fmt.Fprintf(w, value)
-  }
+func NewVcgencmdCollector() (*VcgencmdCollector) {
+  return &VcgencmdCollector{}
 }
 
-func (me *MetricsHandler)ObtainMetrics() (map[string]string) {
-  results := make(map[string]string)
+func (l *VcgencmdCollector) Describe(ch chan<- *prometheus.Desc) {
+  ch <- temperatureDesc
+}
 
-  for _,  metric := range me.metrics {
-    cmd  := exec.Command("vcgencmd", metric)
-    cmdOutput := &bytes.Buffer{}
-    cmd.Stdout = cmdOutput
+func (me *VcgencmdCollector)Collect(ch chan<- prometheus.Metric) {
+  cmd  := exec.Command("./vcgencmd", "measure_temp")
+  cmdOutput := &bytes.Buffer{}
+  cmd.Stdout = cmdOutput
 
-    err := cmd.Run()
-    if err != nil {
-      //TODO an error has occourred
-    }
-    results[metric] = string(cmdOutput.Bytes())
-    fmt.Println(results[metric])
+  err := cmd.Run()
+  if err != nil {
+    log.Fatal(err)
   }
-  fmt.Println(me.metrics)
-  return results
+  out := cmdOutput.Bytes()
+  log.Debug(out)
+
+  value, err := strconv.ParseFloat(string(temperatureRegex.Find(out)), 64)
+
+  if err != nil {
+    log.Fatal(err)
+  }
+
+  log.Debug(value)
+
+  metric, err := prometheus.NewConstMetric(
+    temperatureDesc,
+		prometheus.GaugeValue,
+		value)
+
+  if err == nil {
+    ch <- metric
+  } else {
+    log.Fatal(err)
+  }
 }
 
 func main() {
+  // temperature := prometheus.NewGauge(prometheus.GaugeOpts{
+	// 	Name: "cpu_temperature_celsius",
+	// 	Help: "Current temperature of the CPU.",
+	// })
+
   app := cli.NewApp()
   app.Usage = "export rpi metrics to docker"
 
@@ -52,27 +84,31 @@ func main() {
       Usage:  "host:port combination to bind the http service to",
       EnvVar: "HTTP",
     },
-    // cli.StringSliceFlag {
-    //   Name:   "metrics, m",
-    //   Usage:  "the metrics to expose",
-    //   Value:  &cli.StringSlice{"measure_temp"},
-    //   EnvVar: "METRICS",
-    // },
+    cli.StringFlag {
+      Name:   "logging-level, log",
+      Value:  "INFO",
+      Usage:  "The logging level for this application",
+      EnvVar: "LOGGING_LEVEL",
+    },
   }
 
   app.Action = func(c *cli.Context) error {
-    // me := c.StringSlice("metrics")
-    me := []string{"measure_temp"}
-    fmt.Println(me)
-    mhandler := &MetricsHandler{metrics: me}
+    logging_level_flag := c.String("logging-level")
+    logging_level, err := log.ParseLevel(logging_level_flag)
+    if err != nil {
+      log.Fatalf("logging level: %s doesn't exist", logging_level_flag)
+    }
+    log.SetLevel(logging_level)
+    // me := []string{"measure_temp"}
+    http.Handle("/metrics", promhttp.Handler())
+    // http.HandleFunc("/metrics", mhandler.webHandler)
+    temperatureCollector := NewVcgencmdCollector()
 
-    http.HandleFunc("/metrics", mhandler.webHandler)
+    prometheus.MustRegister(temperatureCollector)
 
     http_server := c.String("http-server")
-    fmt.Printf("listening on: %s\n", http_server)
-    err := http.ListenAndServe(http_server, nil)
-
-    fmt.Println(err);
+    log.Infof("listening on: [%s]\n", http_server)
+    log.Fatal(http.ListenAndServe(http_server, nil))
     return nil
   }
 
