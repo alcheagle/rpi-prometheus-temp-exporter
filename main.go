@@ -3,77 +3,72 @@ package main
 import (
   log "github.com/sirupsen/logrus"
   "os"
-  "regexp"
-  "strconv"
+
   "github.com/urfave/cli"
 
   "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
   "net/http"
-  "os/exec"
-  "bytes"
+
+  "github.com/alcheagle/rpi-prometheus-temp-exporter/temperatureSensors"
 )
 
 var(
-  temperatureRegex = regexp.MustCompile(`^temp=([0-9]*\.[0-9]*)'C$`)
-  temperatureDesc = prometheus.NewDesc(
-		"vcgencmd_temperature_celsius",
+  // merge the metrics with different labels
+  gpuTemperatureDesc = prometheus.NewDesc(
+		"rpi_gpu_temperature_celsius",
+		"temperature in celsius",
+		nil,
+    nil)
+
+  cpuTemperatureDesc = prometheus.NewDesc(
+		"rpi_cpu_temperature_celsius",
 		"temperature in celsius",
 		nil,
     nil)
 )
 
-type VcgencmdCollector struct {
+type TemperatureCollector struct {
 
 }
 
-func NewVcgencmdCollector() (*VcgencmdCollector) {
-  return &VcgencmdCollector{}
+func NewTemperatureCollector() (*TemperatureCollector) {
+  return &TemperatureCollector{}
 }
 
-func (l *VcgencmdCollector) Describe(ch chan<- *prometheus.Desc) {
-  ch <- temperatureDesc
+func (l *TemperatureCollector) Describe(ch chan<- *prometheus.Desc) {
+  ch <- cpuTemperatureDesc
+  ch <- gpuTemperatureDesc
 }
 
-func (me *VcgencmdCollector)Collect(ch chan<- prometheus.Metric) {
-  cmd  := exec.Command("./vcgencmd", "measure_temp")
-  cmdOutput := &bytes.Buffer{}
-  cmd.Stdout = cmdOutput
+func (me *TemperatureCollector)Collect(ch chan<- prometheus.Metric) {
+  //measure the temperature
 
-  err := cmd.Run()
-  if err != nil {
-    log.Fatal(err)
-  }
-  out := cmdOutput.Bytes()
-  log.Debug(out)
-
-  value, err := strconv.ParseFloat(string(temperatureRegex.Find(out)), 64)
-
-  if err != nil {
-    log.Fatal(err)
-  }
-
-  log.Debug(value)
-
-  metric, err := prometheus.NewConstMetric(
-    temperatureDesc,
-		prometheus.GaugeValue,
-		value)
+  metric1, err := prometheus.NewConstMetric(
+    cpuTemperatureDesc,
+    prometheus.GaugeValue,
+    TemperatureSensors.MeasureCPUTemperature())
 
   if err == nil {
-    ch <- metric
+    ch <- metric1
+  } else {
+    log.Fatal(err)
+  }
+
+  metric2, err := prometheus.NewConstMetric(
+    gpuTemperatureDesc,
+    prometheus.GaugeValue,
+    TemperatureSensors.MeasureGPUTemperature())
+
+  if err == nil {
+    ch <- metric2
   } else {
     log.Fatal(err)
   }
 }
 
 func main() {
-  // temperature := prometheus.NewGauge(prometheus.GaugeOpts{
-	// 	Name: "cpu_temperature_celsius",
-	// 	Help: "Current temperature of the CPU.",
-	// })
-
   app := cli.NewApp()
   app.Usage = "export rpi metrics to docker"
 
@@ -99,15 +94,15 @@ func main() {
       log.Fatalf("logging level: %s doesn't exist", logging_level_flag)
     }
     log.SetLevel(logging_level)
-    // me := []string{"measure_temp"}
+    
     http.Handle("/metrics", promhttp.Handler())
-    // http.HandleFunc("/metrics", mhandler.webHandler)
-    temperatureCollector := NewVcgencmdCollector()
+
+    temperatureCollector := NewTemperatureCollector()
 
     prometheus.MustRegister(temperatureCollector)
 
     http_server := c.String("http-server")
-    log.Infof("listening on: [%s]\n", http_server)
+    log.Infof("listening on: [%s]", http_server)
     log.Fatal(http.ListenAndServe(http_server, nil))
     return nil
   }

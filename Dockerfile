@@ -5,5 +5,5 @@ RUN go get -d -v
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=arm go build
 
 FROM scratch
-COPY --from=0 /go/src/github.com/alcheagle/rpi-prometheus-temp-exporter .
-ENTRYPOINT ./rpi-prometheus-temp-exporter
+COPY --from=builder /go/src/github.com/alcheagle/rpi-prometheus-temp-exporter .
+ENTRYPOINT ["/rpi-prometheus-temp-exporter"]
